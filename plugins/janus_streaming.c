@@ -934,6 +934,8 @@ typedef struct janus_streaming_rtp_relay_packet {
 	gboolean simulcast;
 	janus_videocodec codec;
 	int substream;
+	//jeny
+	int watch_id;
 	uint32_t timestamp;
 	uint16_t seq_number;
 	/* The following are only relevant for VP9 SVC*/
@@ -1113,6 +1115,10 @@ static janus_streaming_message exit_message;
 typedef struct janus_streaming_session {
 	janus_plugin_session *handle;
 	janus_streaming_mountpoint *mountpoint;
+	//jeny
+	janus_streaming_mountpoint *oldmountpoint;
+	int watch_id;
+	int watch_id_target;
 	gint64 sdp_sessid;
 	gint64 sdp_version;
 	gboolean started;
@@ -1899,6 +1905,8 @@ void janus_streaming_create_session(janus_plugin_session *handle, int *error) {
 	janus_streaming_session *session = g_malloc0(sizeof(janus_streaming_session));
 	session->handle = handle;
 	session->mountpoint = NULL;	/* This will happen later */
+	//jeny
+	session->oldmountpoint = NULL;	/* This will happen later */
 	session->started = FALSE;	/* This will happen later */
 	session->paused = FALSE;
 	g_atomic_int_set(&session->destroyed, 0);
@@ -3137,11 +3145,15 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 		json_object_set_new(event, "result", result);
 		while(viewer) {
 			janus_streaming_session *session = (janus_streaming_session *)viewer->data;
+			//jeny
+			janus_streaming_mountpoint *oldmp = session->oldmountpoint;
 			if(session != NULL) {
 				session->stopping = TRUE;
 				session->started = FALSE;
 				session->paused = FALSE;
 				session->mountpoint = NULL;
+				//jeny
+				session->oldmountpoint = NULL;
 				/* Tell the core to tear down the PeerConnection, hangup_media will do the rest */
 				gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
 				gateway->close_pc(session->handle);
@@ -3167,6 +3179,8 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 				}
 			}
 			mp->viewers = g_list_remove_all(mp->viewers, session);
+			//jeny
+			if (oldmp != NULL) oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
 			viewer = g_list_first(mp->viewers);
 		}
 		json_decref(event);
@@ -3562,6 +3576,8 @@ void janus_streaming_setup_media(janus_plugin_session *handle) {
 			}
 			janus_mutex_unlock(&source->keyframe.mutex);
 		}
+		//jeny
+		session->watch_id = session->mountpoint->id;
 		if(source->buffermsg) {
 			JANUS_LOG(LOG_HUGE, "Any recent datachannel message to send?\n");
 			janus_mutex_lock(&source->buffermsg_mutex);
@@ -3686,7 +3702,40 @@ static void janus_streaming_hangup_media_internal(janus_plugin_session *handle) 
 		}
 		janus_mutex_unlock(&mp->mutex);
 	}
+	//jeny
+	janus_streaming_mountpoint *oldmp = session->oldmountpoint;
+	if(oldmp) {
+		janus_mutex_lock(&oldmp->mutex);
+		JANUS_LOG(LOG_VERB, "  -- Removing the session from the oldmountpoint viewers\n");
+		if(g_list_find(oldmp->viewers, session) != NULL) {
+			JANUS_LOG(LOG_VERB, "  -- -- Found!\n");
+			janus_refcount_decrease(&oldmp->ref);
+			janus_refcount_decrease(&session->ref);
+		}
+		oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
+		if(oldmp->streaming_source == janus_streaming_source_rtp) {
+			/* Remove the viewer from the helper threads too, if any */
+			if(oldmp->helper_threads > 0) {
+				GList *l = oldmp->threads;
+				while(l) {
+					janus_streaming_helper *ht = (janus_streaming_helper *)l->data;
+					janus_mutex_lock(&ht->mutex);
+					if(g_list_find(ht->viewers, session) != NULL) {
+						ht->num_viewers--;
+						ht->viewers = g_list_remove_all(ht->viewers, session);
+						janus_mutex_unlock(&ht->mutex);
+						break;
+					}
+					janus_mutex_unlock(&ht->mutex);
+					l = l->next;
+				}
+			}
+		}
+		janus_mutex_unlock(&oldmp->mutex);
+	}
 	session->mountpoint = NULL;
+	//jeny
+	session->oldmountpoint = NULL;
 	g_atomic_int_set(&session->hangingup, 0);
 }
 
@@ -4213,11 +4262,12 @@ done:
 			}
 			janus_mutex_unlock(&mountpoints_mutex);
 			JANUS_LOG(LOG_VERB, "Request to switch to mountpoint/stream %"SCNu64" (old: %"SCNu64")\n", id_value, oldmp->id);
-			session->paused = TRUE;
+			//jeny
+			//session->paused = TRUE;
 			/* Unsubscribe from the previous mountpoint and subscribe to the new one */
-			janus_mutex_lock(&oldmp->mutex);
+			/*janus_mutex_lock(&oldmp->mutex);
 			oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
-			/* Remove the viewer from the helper threads too, if any */
+			/* Remove the viewer from the helper threads too, if any * /
 			if(mp->helper_threads > 0) {
 				GList *l = mp->threads;
 				while(l) {
@@ -4233,33 +4283,75 @@ done:
 					l = l->next;
 				}
 			}
-			janus_refcount_decrease(&oldmp->ref);	/* This is for the user going away */
-			janus_mutex_unlock(&oldmp->mutex);
-			/* Subscribe to the new one */
-			janus_mutex_lock(&mp->mutex);
-			mp->viewers = g_list_append(mp->viewers, session);
-			/* If we're using helper threads, add the viewer to one of those */
-			if(mp->helper_threads > 0) {
-				int viewers = 0;
-				janus_streaming_helper *helper = NULL;
-				GList *l = mp->threads;
-				while(l) {
-					janus_streaming_helper *ht = (janus_streaming_helper *)l->data;
-					if(ht->num_viewers == 0 || ht->num_viewers < viewers) {
-						viewers = ht->num_viewers;
-						helper = ht;
+			janus_refcount_decrease(&oldmp->ref);	/* This is for the user going away * /
+			janus_mutex_unlock(&oldmp->mutex);*/
+			//jeny
+			if (session->watch_id_target != id_value) {
+				/* Subscribe to the new one */
+				session->watch_id_target = id_value;
+				session->oldmountpoint = oldmp;
+				janus_mutex_lock(&mp->mutex);
+				mp->viewers = g_list_append(mp->viewers, session);
+				/* If we're using helper threads, add the viewer to one of those */
+				if(mp->helper_threads > 0) {
+					int viewers = 0;
+					janus_streaming_helper *helper = NULL;
+					GList *l = mp->threads;
+					while(l) {
+						janus_streaming_helper *ht = (janus_streaming_helper *)l->data;
+						if(ht->num_viewers == 0 || ht->num_viewers < viewers) {
+							viewers = ht->num_viewers;
+							helper = ht;
+						}
+						l = l->next;
 					}
-					l = l->next;
+					JANUS_LOG(LOG_INFO, "Adding viewer to helper thread %d\n", helper->id);
+					janus_mutex_lock(&helper->mutex);
+					helper->viewers = g_list_append(helper->viewers, session);
+					helper->num_viewers++;
+					janus_mutex_unlock(&helper->mutex);
 				}
-				JANUS_LOG(LOG_INFO, "Adding viewer to helper thread %d\n", helper->id);
-				janus_mutex_lock(&helper->mutex);
-				helper->viewers = g_list_append(helper->viewers, session);
-				helper->num_viewers++;
-				janus_mutex_unlock(&helper->mutex);
+				janus_mutex_unlock(&mp->mutex);
+				session->mountpoint = mp;
+				int switch_timeout = 0;
+				while (session->watch_id != session->watch_id_target) {
+					if (switch_timeout>=3000) {
+						/*session->watch_id_target = session->watch_id;
+						JANUS_LOG(LOG_VERB, "Can't switch: timeout switching\n");
+						error_code = JANUS_STREAMING_ERROR_CANT_SWITCH;
+						g_snprintf(error_cause, 512, "Can't switch: timeout switching");
+						goto error;*/
+						break;
+					}
+					switch_timeout+=100;
+					g_usleep(100000);
+				}
+				/* Unsubscribe from the previous mountpoint and subscribe to the new one */
+				janus_mutex_lock(&oldmp->mutex);
+				oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
+				/* Remove the viewer from the helper threads too, if any */
+				if(oldmp->helper_threads > 0) {
+					GList *l = oldmp->threads;
+					while(l) {
+						janus_streaming_helper *ht = (janus_streaming_helper *)l->data;
+						janus_mutex_lock(&ht->mutex);
+						if(g_list_find(ht->viewers, session) != NULL) {
+							ht->num_viewers--;
+							ht->viewers = g_list_remove_all(ht->viewers, session);
+							janus_mutex_unlock(&ht->mutex);
+							break;
+						}
+						janus_mutex_unlock(&ht->mutex);
+						l = l->next;
+					}
+				}
+				janus_refcount_decrease(&oldmp->ref);	/* This is for the user going away */
+				janus_mutex_unlock(&oldmp->mutex);
 			}
-			janus_mutex_unlock(&mp->mutex);
-			session->mountpoint = mp;
-			session->paused = FALSE;
+			/* Subscribe to the new one */
+			//session->paused = FALSE;
+			//janus_mutex_unlock(&mp->mutex);
+
 			/* Done */
 			janus_refcount_decrease(&oldmp->ref);	/* This is for the request being done with it */
 			result = json_object();
@@ -6167,6 +6259,13 @@ static void *janus_streaming_relay_thread(void *data) {
 						}
 						bytes = buflen;
 					}
+					//jeny
+					gboolean kf = FALSE;
+					int plen = 0;
+					char *payload = janus_rtp_payload(buffer, bytes, &plen);
+					if(payload) {
+						kf = janus_h264_is_keyframe(payload, plen);
+					}
 					/* First of all, let's check if this is (part of) a keyframe that we may need to save it for future reference */
 					if(source->keyframe.enabled) {
 						if(source->keyframe.temp_ts > 0 && ntohl(rtp->timestamp) != source->keyframe.temp_ts) {
@@ -6198,7 +6297,6 @@ static void *janus_streaming_relay_thread(void *data) {
 							source->keyframe.temp_keyframe = g_list_append(source->keyframe.temp_keyframe, pkt);
 							janus_mutex_unlock(&source->keyframe.mutex);
 						} else {
-							gboolean kf = FALSE;
 							/* Parse RTP header first */
 							janus_rtp_header *header = (janus_rtp_header *)buffer;
 							guint32 timestamp = ntohl(header->timestamp);
@@ -6238,11 +6336,11 @@ static void *janus_streaming_relay_thread(void *data) {
 									pkt->timestamp = source->keyframe.temp_ts;
 									pkt->seq_number = ntohs(rtp->seq_number);
 									source->keyframe.temp_keyframe = g_list_append(source->keyframe.temp_keyframe, pkt);
-									janus_mutex_unlock(&source->keyframe.mutex);
+							janus_mutex_unlock(&source->keyframe.mutex);
+								}
 								}
 							}
 						}
-					}
 					/* If paused, ignore this packet */
 					if(!mountpoint->enabled)
 						continue;
@@ -6253,11 +6351,14 @@ static void *janus_streaming_relay_thread(void *data) {
 					packet.length = bytes;
 					packet.is_rtp = TRUE;
 					packet.is_video = TRUE;
-					packet.is_keyframe = FALSE;
+					//jeny
+					packet.is_keyframe = kf;
 					packet.simulcast = source->simulcast;
 					packet.substream = index;
 					packet.codec = mountpoint->codecs.video_codec;
 					packet.svc = FALSE;
+					//jeny
+					packet.watch_id = mountpoint->id;
 					if(source->svc) {
 						/* We're doing SVC: let's parse this packet to see which layers are there */
 						int plen = 0;
@@ -6420,6 +6521,8 @@ static void *janus_streaming_relay_thread(void *data) {
 			session->started = FALSE;
 			session->paused = FALSE;
 			session->mountpoint = NULL;
+			//jeny
+			session->oldmountpoint = NULL;
 			/* Tell the core to tear down the PeerConnection, hangup_media will do the rest */
 			gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
 			gateway->close_pc(session->handle);
@@ -6675,6 +6778,13 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 					memcpy(payload, vp8pd, sizeof(vp8pd));
 				}
 			} else {
+				//jeny
+				if (session->watch_id != session->watch_id_target) {
+					if (packet->watch_id == session->watch_id_target && packet->is_keyframe) {
+						session->watch_id = session->watch_id_target;
+					}
+				}
+				if (packet->watch_id != session->watch_id) return;
 				/* Fix sequence number and timestamp (switching may be involved) */
 				janus_rtp_header_update(packet->data, &session->context, TRUE, 0);
 				if(gateway != NULL)
