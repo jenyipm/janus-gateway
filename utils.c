@@ -669,6 +669,9 @@ gboolean janus_h264_is_keyframe(const char *buffer, int len) {
 			buffer += psize;
 			tot -= psize;
 		}
+	//jeny
+	} else if(fragment == 7 || fragment == 8) {
+		return TRUE;
 	}
 	/* If we got here it's not a key frame */
 	return FALSE;

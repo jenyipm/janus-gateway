@@ -1142,6 +1142,8 @@ typedef struct janus_streaming_session {
 } janus_streaming_session;
 static GHashTable *sessions;
 static janus_mutex sessions_mutex = JANUS_MUTEX_INITIALIZER;
+//jeny
+void clear_old_mounpoint(janus_streaming_session *session);
 
 static void janus_streaming_session_destroy(janus_streaming_session *session) {
 	if(session && g_atomic_int_compare_and_exchange(&session->destroyed, 0, 1))
@@ -3145,15 +3147,11 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 		json_object_set_new(event, "result", result);
 		while(viewer) {
 			janus_streaming_session *session = (janus_streaming_session *)viewer->data;
-			//jeny
-			janus_streaming_mountpoint *oldmp = session->oldmountpoint;
 			if(session != NULL) {
 				session->stopping = TRUE;
 				session->started = FALSE;
 				session->paused = FALSE;
 				session->mountpoint = NULL;
-				//jeny
-				session->oldmountpoint = NULL;
 				/* Tell the core to tear down the PeerConnection, hangup_media will do the rest */
 				gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
 				gateway->close_pc(session->handle);
@@ -3179,12 +3177,15 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 				}
 			}
 			mp->viewers = g_list_remove_all(mp->viewers, session);
-			//jeny
-			if (oldmp != NULL) oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
 			viewer = g_list_first(mp->viewers);
 		}
 		json_decref(event);
 		janus_mutex_unlock(&mp->mutex);
+
+		//jeny
+		clear_old_mounpoint(session);
+		JANUS_LOG(LOG_WARN, "jeny destroy!!!!\n");
+
 		if(save) {
 			/* This change is permanent: save to the configuration file too
 			 * FIXME: We should check if anything fails... */
@@ -3703,14 +3704,21 @@ static void janus_streaming_hangup_media_internal(janus_plugin_session *handle) 
 		janus_mutex_unlock(&mp->mutex);
 	}
 	//jeny
+	clear_old_mounpoint(session);
+	session->mountpoint = NULL;
+	g_atomic_int_set(&session->hangingup, 0);
+}
+
+//jeny
+void clear_old_mounpoint(janus_streaming_session *session) {
 	janus_streaming_mountpoint *oldmp = session->oldmountpoint;
-	if(oldmp) {
+	if(oldmp != NULL) {
 		janus_mutex_lock(&oldmp->mutex);
 		JANUS_LOG(LOG_VERB, "  -- Removing the session from the oldmountpoint viewers\n");
 		if(g_list_find(oldmp->viewers, session) != NULL) {
 			JANUS_LOG(LOG_VERB, "  -- -- Found!\n");
 			janus_refcount_decrease(&oldmp->ref);
-			janus_refcount_decrease(&session->ref);
+			//janus_refcount_decrease(&session->ref);
 		}
 		oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
 		if(oldmp->streaming_source == janus_streaming_source_rtp) {
@@ -3733,10 +3741,9 @@ static void janus_streaming_hangup_media_internal(janus_plugin_session *handle) 
 		}
 		janus_mutex_unlock(&oldmp->mutex);
 	}
-	session->mountpoint = NULL;
-	//jeny
 	session->oldmountpoint = NULL;
-	g_atomic_int_set(&session->hangingup, 0);
+	//session->watch_id = NULL;
+	//session->watch_id_target = NULL;
 }
 
 /* Thread to handle incoming messages */
@@ -4216,6 +4223,8 @@ done:
 			 * NOTE: this only works for live RTP streams as of now: you
 			 * cannot, for instance, switch from a live RTP mountpoint to
 			 * an on demand one or viceversa (TBD.) */
+			//jeny
+			clear_old_mounpoint(session);
 			janus_streaming_mountpoint *oldmp = session->mountpoint;
 			if(oldmp == NULL) {
 				JANUS_LOG(LOG_VERB, "Can't switch: not on a mountpoint\n");
@@ -4313,40 +4322,6 @@ done:
 				}
 				janus_mutex_unlock(&mp->mutex);
 				session->mountpoint = mp;
-				int switch_timeout = 0;
-				while (session->watch_id != session->watch_id_target) {
-					if (switch_timeout>=3000) {
-						/*session->watch_id_target = session->watch_id;
-						JANUS_LOG(LOG_VERB, "Can't switch: timeout switching\n");
-						error_code = JANUS_STREAMING_ERROR_CANT_SWITCH;
-						g_snprintf(error_cause, 512, "Can't switch: timeout switching");
-						goto error;*/
-						break;
-					}
-					switch_timeout+=100;
-					g_usleep(100000);
-				}
-				/* Unsubscribe from the previous mountpoint and subscribe to the new one */
-				janus_mutex_lock(&oldmp->mutex);
-				oldmp->viewers = g_list_remove_all(oldmp->viewers, session);
-				/* Remove the viewer from the helper threads too, if any */
-				if(oldmp->helper_threads > 0) {
-					GList *l = oldmp->threads;
-					while(l) {
-						janus_streaming_helper *ht = (janus_streaming_helper *)l->data;
-						janus_mutex_lock(&ht->mutex);
-						if(g_list_find(ht->viewers, session) != NULL) {
-							ht->num_viewers--;
-							ht->viewers = g_list_remove_all(ht->viewers, session);
-							janus_mutex_unlock(&ht->mutex);
-							break;
-						}
-						janus_mutex_unlock(&ht->mutex);
-						l = l->next;
-					}
-				}
-				janus_refcount_decrease(&oldmp->ref);	/* This is for the user going away */
-				janus_mutex_unlock(&oldmp->mutex);
 			}
 			/* Subscribe to the new one */
 			//session->paused = FALSE;
@@ -4354,16 +4329,6 @@ done:
 
 			/* Done */
 			janus_refcount_decrease(&oldmp->ref);	/* This is for the request being done with it */
-			result = json_object();
-			json_object_set_new(result, "switched", json_string("ok"));
-			json_object_set_new(result, "id", json_integer(id_value));
-			/* Also notify event handlers */
-			if(notify_events && gateway->events_is_enabled()) {
-				json_t *info = json_object();
-				json_object_set_new(info, "status", json_string("switching"));
-				json_object_set_new(info, "id", json_integer(id_value));
-				gateway->notify_event(&janus_streaming_plugin, session->handle, info);
-			}
 		} else if(!strcasecmp(request_text, "stop")) {
 			if(session->stopping || !session->started) {
 				/* Been there, done that: ignore */
@@ -6782,6 +6747,18 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 				if (session->watch_id != session->watch_id_target) {
 					if (packet->watch_id == session->watch_id_target && packet->is_keyframe) {
 						session->watch_id = session->watch_id_target;
+						janus_streaming_mountpoint *oldmp = (janus_streaming_mountpoint *)session->oldmountpoint;
+						if (oldmp != NULL) {
+							clear_old_mounpoint(session);
+							json_t *event = json_object();
+							json_object_set_new(event, "streaming", json_string("event"));
+							json_t *result = json_object();
+							json_object_set_new(result, "switched", json_string("ok"));
+							json_object_set_new(result, "id", json_integer(session->watch_id));
+							json_object_set_new(event, "result", result);
+							gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
+							json_decref(event);
+						}
 					}
 				}
 				if (packet->watch_id != session->watch_id) return;
