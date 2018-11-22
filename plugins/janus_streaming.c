@@ -934,7 +934,7 @@ typedef struct janus_streaming_rtp_relay_packet {
 	gboolean simulcast;
 	janus_videocodec codec;
 	int substream;
-	//jeny
+	//patch
 	int watch_id;
 	uint32_t timestamp;
 	uint16_t seq_number;
@@ -1115,7 +1115,7 @@ static janus_streaming_message exit_message;
 typedef struct janus_streaming_session {
 	janus_plugin_session *handle;
 	janus_streaming_mountpoint *mountpoint;
-	//jeny
+	//patch
 	janus_streaming_mountpoint *oldmountpoint;
 	int watch_id;
 	int watch_id_target;
@@ -1142,7 +1142,7 @@ typedef struct janus_streaming_session {
 } janus_streaming_session;
 static GHashTable *sessions;
 static janus_mutex sessions_mutex = JANUS_MUTEX_INITIALIZER;
-//jeny
+//patch
 void clear_old_mounpoint(janus_streaming_session *session);
 
 static void janus_streaming_session_destroy(janus_streaming_session *session) {
@@ -1907,7 +1907,7 @@ void janus_streaming_create_session(janus_plugin_session *handle, int *error) {
 	janus_streaming_session *session = g_malloc0(sizeof(janus_streaming_session));
 	session->handle = handle;
 	session->mountpoint = NULL;	/* This will happen later */
-	//jeny
+	//patch
 	session->oldmountpoint = NULL;	/* This will happen later */
 	session->started = FALSE;	/* This will happen later */
 	session->paused = FALSE;
@@ -3182,9 +3182,8 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 		json_decref(event);
 		janus_mutex_unlock(&mp->mutex);
 
-		//jeny
+		//patch
 		clear_old_mounpoint(session);
-		JANUS_LOG(LOG_WARN, "jeny destroy!!!!\n");
 
 		if(save) {
 			/* This change is permanent: save to the configuration file too
@@ -3577,7 +3576,7 @@ void janus_streaming_setup_media(janus_plugin_session *handle) {
 			}
 			janus_mutex_unlock(&source->keyframe.mutex);
 		}
-		//jeny
+		//patch
 		session->watch_id = session->mountpoint->id;
 		if(source->buffermsg) {
 			JANUS_LOG(LOG_HUGE, "Any recent datachannel message to send?\n");
@@ -3703,13 +3702,13 @@ static void janus_streaming_hangup_media_internal(janus_plugin_session *handle) 
 		}
 		janus_mutex_unlock(&mp->mutex);
 	}
-	//jeny
+	//patch
 	clear_old_mounpoint(session);
 	session->mountpoint = NULL;
 	g_atomic_int_set(&session->hangingup, 0);
 }
 
-//jeny
+//patch
 void clear_old_mounpoint(janus_streaming_session *session) {
 	janus_streaming_mountpoint *oldmp = session->oldmountpoint;
 	if(oldmp != NULL) {
@@ -4223,7 +4222,7 @@ done:
 			 * NOTE: this only works for live RTP streams as of now: you
 			 * cannot, for instance, switch from a live RTP mountpoint to
 			 * an on demand one or viceversa (TBD.) */
-			//jeny
+			//patch
 			clear_old_mounpoint(session);
 			janus_streaming_mountpoint *oldmp = session->mountpoint;
 			if(oldmp == NULL) {
@@ -4271,7 +4270,7 @@ done:
 			}
 			janus_mutex_unlock(&mountpoints_mutex);
 			JANUS_LOG(LOG_VERB, "Request to switch to mountpoint/stream %"SCNu64" (old: %"SCNu64")\n", id_value, oldmp->id);
-			//jeny
+			//patch
 			//session->paused = TRUE;
 			/* Unsubscribe from the previous mountpoint and subscribe to the new one */
 			/*janus_mutex_lock(&oldmp->mutex);
@@ -4294,7 +4293,7 @@ done:
 			}
 			janus_refcount_decrease(&oldmp->ref);	/* This is for the user going away * /
 			janus_mutex_unlock(&oldmp->mutex);*/
-			//jeny
+			//patch
 			if (session->watch_id_target != id_value) {
 				/* Subscribe to the new one */
 				session->watch_id_target = id_value;
@@ -6224,7 +6223,7 @@ static void *janus_streaming_relay_thread(void *data) {
 						}
 						bytes = buflen;
 					}
-					//jeny
+					//patch
 					gboolean kf = FALSE;
 					int plen = 0;
 					char *payload = janus_rtp_payload(buffer, bytes, &plen);
@@ -6316,13 +6315,13 @@ static void *janus_streaming_relay_thread(void *data) {
 					packet.length = bytes;
 					packet.is_rtp = TRUE;
 					packet.is_video = TRUE;
-					//jeny
+					//patch
 					packet.is_keyframe = kf;
 					packet.simulcast = source->simulcast;
 					packet.substream = index;
 					packet.codec = mountpoint->codecs.video_codec;
 					packet.svc = FALSE;
-					//jeny
+					//patch
 					packet.watch_id = mountpoint->id;
 					if(source->svc) {
 						/* We're doing SVC: let's parse this packet to see which layers are there */
@@ -6486,7 +6485,7 @@ static void *janus_streaming_relay_thread(void *data) {
 			session->started = FALSE;
 			session->paused = FALSE;
 			session->mountpoint = NULL;
-			//jeny
+			//patch
 			session->oldmountpoint = NULL;
 			/* Tell the core to tear down the PeerConnection, hangup_media will do the rest */
 			gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
@@ -6743,7 +6742,7 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 					memcpy(payload, vp8pd, sizeof(vp8pd));
 				}
 			} else {
-				//jeny
+				//patch
 				if (session->watch_id != session->watch_id_target) {
 					if (packet->watch_id == session->watch_id_target && packet->is_keyframe) {
 						session->watch_id = session->watch_id_target;

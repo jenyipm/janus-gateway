@@ -669,7 +669,7 @@ gboolean janus_h264_is_keyframe(const char *buffer, int len) {
 			buffer += psize;
 			tot -= psize;
 		}
-	//jeny
+	//patch
 	} else if(fragment == 7 || fragment == 8) {
 		return TRUE;
 	}
