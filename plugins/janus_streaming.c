@@ -1119,6 +1119,8 @@ typedef struct janus_streaming_session {
 	janus_streaming_mountpoint *oldmountpoint;
 	int watch_id;
 	int watch_id_target;
+	//patch
+	char *switch_transaction;
 	gint64 sdp_sessid;
 	gint64 sdp_version;
 	gboolean started;
@@ -1908,6 +1910,7 @@ void janus_streaming_create_session(janus_plugin_session *handle, int *error) {
 	session->handle = handle;
 	session->mountpoint = NULL;	/* This will happen later */
 	//patch
+	session->switch_transaction = NULL;	/* This will happen later */
 	session->oldmountpoint = NULL;	/* This will happen later */
 	session->started = FALSE;	/* This will happen later */
 	session->paused = FALSE;
@@ -3152,6 +3155,8 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 				session->started = FALSE;
 				session->paused = FALSE;
 				session->mountpoint = NULL;
+				//patch
+				session->switch_transaction = NULL;
 				/* Tell the core to tear down the PeerConnection, hangup_media will do the rest */
 				gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
 				gateway->close_pc(session->handle);
@@ -3705,6 +3710,8 @@ static void janus_streaming_hangup_media_internal(janus_plugin_session *handle) 
 	//patch
 	clear_old_mounpoint(session);
 	session->mountpoint = NULL;
+	//patch
+	session->switch_transaction = NULL;
 	g_atomic_int_set(&session->hangingup, 0);
 }
 
@@ -4322,6 +4329,8 @@ done:
 				janus_mutex_unlock(&mp->mutex);
 				session->mountpoint = mp;
 			}
+			//patch
+			session->switch_transaction = g_strdup(msg->transaction);
 			/* Subscribe to the new one */
 			//session->paused = FALSE;
 			//janus_mutex_unlock(&mp->mutex);
@@ -6755,7 +6764,7 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 							json_object_set_new(result, "switched", json_string("ok"));
 							json_object_set_new(result, "id", json_integer(session->watch_id));
 							json_object_set_new(event, "result", result);
-							gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
+							gateway->push_event(session->handle, &janus_streaming_plugin, session->switch_transaction, event, NULL);
 							json_decref(event);
 						}
 					}
