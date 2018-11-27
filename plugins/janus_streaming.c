@@ -3583,6 +3583,7 @@ void janus_streaming_setup_media(janus_plugin_session *handle) {
 		}
 		//patch
 		session->watch_id = session->mountpoint->id;
+		session->watch_id_target = session->watch_id;
 		if(source->buffermsg) {
 			JANUS_LOG(LOG_HUGE, "Any recent datachannel message to send?\n");
 			janus_mutex_lock(&source->buffermsg_mutex);
@@ -4340,6 +4341,10 @@ done:
 				}
 				janus_mutex_unlock(&mp->mutex);
 				session->mountpoint = mp;
+			} else {
+				result = json_object();
+				json_object_set_new(result, "switched", json_string("ok"));
+				json_object_set_new(result, "id", json_integer(id_value));
 			}
 			//patch
 			session->switch_transaction = g_strdup(msg->transaction);
